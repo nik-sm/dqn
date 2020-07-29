@@ -230,11 +230,14 @@ def run(argv=[]):
     print('Begin training...')
     episode_reward = 0.
     episode_steps = 0
-    for i in trange(args.frames, desc='Frames', leave=True):
+    bar = trange(args.frames, desc='Frames', leave=True)
+    for i in bar:
         # Compute epsilon
-        epsilon = float(args.final_exploration - args.initial_exploration)
+        epsilon = float(abs(args.final_exploration - args.initial_exploration))
         epsilon /= args.final_exploration_frame
-        epsilon *= i
+        epsilon = max(args.final_exploration, 1 - i * epsilon)
+        if i % 1000 == 0:
+            bar.set_postfix(epsilon=epsilon)
 
         # Act on next frame
         reward, done = agent.step(epsilon)
