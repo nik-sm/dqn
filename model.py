@@ -15,7 +15,7 @@ class DQN(nn.Module):
             nn.Flatten(),
         )
 
-        shape_after = shape_after_conv((4, 84, 84), self.net1)
+        shape_after = shape_after_conv((4, 110, 84), self.net1)
 
         self.net2 = nn.Sequential(
             nn.Linear(*shape_after[1:], 512),

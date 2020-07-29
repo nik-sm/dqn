@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as ftransforms
 from model import DQN
 from torch.optim import Adam
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 from utils import float01
 
@@ -52,6 +53,7 @@ class Agent:
                  replay_start_size: int,
                  batch_size: int,
                  discount_factor: float,
+                 action_repeat: int = 4,
                  device: str = 'cuda:0',
                  env_seed: int = 0,
                  frame_buffer_size: int = 4):
@@ -59,6 +61,7 @@ class Agent:
         self.device = device
         self.discount_factor = discount_factor
         self.game = game
+        self.action_repeat = action_repeat
 
         self.frame_buf = deque(maxlen=frame_buffer_size)
         self.replay_buf = ReplayBuffer(replay_buffer_size, batch_size)
@@ -96,9 +99,7 @@ class Agent:
         """preprocess frame along with the 3 previously seen frames"""
         x = ftransforms.to_pil_image(x)
         x = ftransforms.to_grayscale(x)
-
         x = ftransforms.resize(x, [110, 84])
-        x = ftransforms.center_crop(x, 84)
         x = ftransforms.to_tensor(x)
 
         # Handle flicker - TODO unnecessary with Openai gym?
@@ -135,17 +136,26 @@ class Agent:
             q_values = self.policy_net(self.state.unsqueeze(0))
             action = q_values.argmax(dim=1)
 
-        # Take step, observing reward
-        frame, reward, done, _ = self.env.step(action)
+        # Take N steps, observing reward
+        reward = 0
+        done = False
+        for _ in range(self.action_repeat):
+            frame, next_reward, next_done, _ = self.env.step(action)
+            self.process_frame(frame)
+            if next_reward < 0:
+                reward -= 1
+            elif next_reward > 0:
+                reward += 1
+            done = done or next_done  # ??
 
-        # Process frame and obtain 4-frame state
-        self.process_frame(frame)
-        next_state = self.state_from_frame_buf()
+            # Process frame and obtain 4-frame state
+            next_state = self.state_from_frame_buf()
 
-        # Store into replay buffer
-        self.replay_buf.append(
-            Experience(self.state, torch.tensor(action), torch.tensor(reward),
-                       next_state, torch.tensor(done)))
+            # Store into replay buffer
+            self.replay_buf.append(
+                Experience(self.state, torch.tensor(action),
+                           torch.tensor(reward), next_state,
+                           torch.tensor(done)))
 
         # Advance to next state
         self.state = next_state.to(self.device)
@@ -162,9 +172,10 @@ class Agent:
             torch.max(self.target_net(next_states), dim=1)[0])
         predicted_values = torch.gather(self.policy_net(states), 1,
                                         actions).squeeze()
-        loss = F.mse_loss(y, predicted_values)
+        loss = F.smooth_l1_loss(y, predicted_values)
         loss.backward()
         self.optimizer.step()
+        return (y - predicted_values).abs().mean()
 
 
 def parse_args(argv):
@@ -213,6 +224,7 @@ def run(argv=[]):
         batch_size=args.batch_size,
         discount_factor=args.discount_factor,
     )
+    writer = SummaryWriter('tensorboard_logs')
 
     torch.manual_seed(0)
     np.random.seed(0)
@@ -220,6 +232,8 @@ def run(argv=[]):
     # Train agent
     print('Begin training...')
     for e in trange(args.episodes, desc='Episodes', leave=True):
+        episode_reward = 0.
+
         for i in trange(args.episode_length, desc='Frames', leave=False):
             # Compute epsilon
             epsilon = float(args.final_exploration - args.initial_exploration)
@@ -227,26 +241,27 @@ def run(argv=[]):
             epsilon *= e * args.episode_length + i
 
             # Act on next frame
-            agent.step(epsilon)
+            reward, done = agent.step(epsilon)
+            episode_reward += reward
+            writer.add_scalar('Reward', reward, e * args.episode_length + i)
 
             # Every K steps, update policy net
             if i % args.policy_update_frequency == 0:
-                agent.q_update()
+                td_error = agent.q_update()
+                writer.add_scalar('TD_Error', td_error,
+                                  e * args.episode_length + i)
 
             # Every C steps, update target net
             if i % args.target_update_frequency == 0:
                 agent.target_net.load_state_dict(agent.policy_net.state_dict())
+        writer.add_scalar('Avg_Episode_Reward', episode_reward,
+                          e * args.episode_length)
 
 
 """
 Agent TODO:
 - At time step t, set every pixel i = max(p_{i, t}, p_{i, t-1})
   (compensates for flickering, maybe handled by openai gym?)
-- clamp rewards (-1, 0, 1)
-- select action 1 of every k frames, repeat last action otherwise
-- collect groups of 4 frames, preprocess
-- "clip the error term from the update
-r + gamma*max_a' Q_target(s', a') - Q_policy(s, a) to be between -1 and 1"
 """
 
 if __name__ == '__main__':
