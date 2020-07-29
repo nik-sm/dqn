@@ -18,7 +18,7 @@ class DQN(nn.Module):
         shape_after = shape_after_conv((4, 84, 84), self.net1)
 
         self.net2 = nn.Sequential(
-            nn.Linear(shape_after, 512),
+            nn.Linear(*shape_after[1:], 512),
             nn.ReLU(inplace=True),
             nn.Linear(512, n_action),
         )
@@ -30,5 +30,5 @@ class DQN(nn.Module):
 
 
 def shape_after_conv(in_shape, net):
-    x = torch.randn(1, *in_shape).to(net.device)
-    return net(x).shape.squeeze()
+    x = torch.randn(1, *in_shape)
+    return net(x).shape
