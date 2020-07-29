@@ -1,3 +1,15 @@
+[Human-level control through deep reinforcement learning](https://www.nature.com/articles/nature14236.pdf)
+
+# Questions from paper
+- They explain three sources of instability in Q learning. The third is "correlations between action-values (Q) and target values `r + gamma * max_a' Q(s', a')` - explain this
+- Explain the loss function in words
+```L(theta_i) = E_{experience} [(r + gamma * max_a' Q_target(s', a') - Q_policy(s, a)**2]
+```
+> The loss is the squared difference between the policy net's prediction for the value of action a in state s, and the reward received for that action plus a discounted portion of the target net's predicted max reward at state s'
+> In other words, we want to make a good prediction of the reward we have actually observed (r), and a stabilized estimate of the reward at one step in the future.
+> Or said another way - we know that a correctly computed Q function must obey the Bellman equation!
+
+
 # Algorithm
 
 ```

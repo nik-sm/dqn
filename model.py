@@ -2,19 +2,26 @@ import torch
 import torch.nn as nn
 
 
-class DQNModel(nn.Module):
+class DQN(nn.Module):
     def __init__(self, n_action=4):
         super().__init__()
         self.net1 = nn.Sequential(
-            nn.Conv2d(4, 16, 8, stride=4),  # TODO - padding?
+            nn.Conv2d(4, 32, 8, 4),  # TODO - padding?
             nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, 4, stride=2),  # TODO - padding?
+            nn.Conv2d(32, 64, 4, 2),  # TODO - padding?
             nn.ReLU(inplace=True),
-            nn.Flatten())
+            nn.Conv2d(64, 64, 3),
+            nn.ReLU(inplace=True),
+            nn.Flatten(),
+        )
+
         shape_after = shape_after_conv((4, 84, 84), self.net1)
-        self.net2 = nn.Sequential(nn.Linear(shape_after, 256),
-                                  nn.ReLU(inplace=True),
-                                  nn.Linear(256, n_action))
+
+        self.net2 = nn.Sequential(
+            nn.Linear(shape_after, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, n_action),
+        )
 
     def forward(self, x):
         x = self.net1(x)

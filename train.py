@@ -1,152 +1,177 @@
 import random
 import sys
 from argparse import ArgumentParser
-from collections import namedtuple
+from collections import deque
+from dataclasses import dataclass
+from random import sample
+from typing import NamedTuple
 
 import gym
-import numpy as np
 import torch
-import torch.nn.functional as F
-import torchvision.transforms as transforms
-from pytorch_lightning import LightningModule, Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-from torch import optim
-from torch.utils.data import DataLoader
-from torchvision.datasets import MNIST
-
-from model import DQNModel
-
-Experience = namedtuple('Experience', 'state action reward next_state done')
+import torchvision.transforms.functional as ftransforms
+from model import DQN
+from torch.utils.data import DataLoader, IterableDataset
+from utils import float01
 
 
-class ReplayBuffer:
-    def __init__(self, size: int = 1000):
-        self.size = size
-        self.buffer = []
-        self.cursor = 0
-
-    def sample_batch(self, n):
-        return random.sample(self.buffer, n)
-
-    def add(self, item: Experience):
-        if len(self.buffer) < self.size:  # Still have room
-            self.buffer.append(item)
-        else:  # Overwrite item at cursor and move cursor
-            self.buffer[self.cursor] = item
-            self.cursor = (self.cursor + 1) % self.size
+class Experience(NamedTuple):
+    state: torch.Tensor
+    action: int
+    reward: float
+    next_state: torch.Tensor
+    done: bool
 
 
+class ReplayBuffer(IterableDataset):
+    """Store N previous experiences for random sampling"""
+    def __init__(self, capacity, batch_size):
+        self.buffer = [None] * capacity
+        self.capacity = capacity
+        self.batch_size = batch_size
+        self.index = 0
+        self.size = 0
+
+    def append(self, x):
+        self.buffer[self.index] = x
+        self.size = min(self.size + 1, self.capacity)
+        self.index = (self.index + 1) % self.capacity
+
+    def sample(self):
+        indices = sample(range(self.size), self.batch_size)
+        return [self.buffer[index] for index in indices]
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            raise NotImplementedError('TODO - multiple workers')
+        else:
+            yield self.sample()
+
+
+"""
+Agent TODO:
+- At time step t, set every pixel i = max(p_{i, t}, p_{i, t-1})
+  (compensates for flickering, maybe handled by openai gym?)
+- clamp rewards (-1, 0, 1)
+- select action 1 of every k frames, repeat last action otherwise
+- collect groups of 4 frames, preprocess
+- "clip the error term from the update
+r + gamma*max_a' Q_target(s', a') - Q_policy(s, a) to be between -1 and 1"
+"""
+
+
+@dataclass
 class Agent:
-    def __init__(self,
-                 net: DQN,
-                 eps=0.05,
-                 seed=0,
-                 game='Breakout-v0',
-                 buffer_size: int = 1000):
-        self.env = gym.make(game)
-        self.env.seed(seed)
+    policy_net: DQN
+    target_net: DQN
+    loader: DataLoader
+    optimizer: torch.optim.Optimizer
+    game: str
+    env_seed: int = 0
+    replay_buffer_size: int = 1000
+    frame_buffer_size: int = 4
+
+    def __post_init__(self):
+        self.env = gym.make(self.game)
+        self.env.seed(self.env_seed)
         self.reset()
 
-        self.eps = eps
-        self.net = net
-        self.buf = ReplayBuffer(buffer_size)
-        self.state = self.env.reset()
+        self.replay_buf = ReplayBuffer(self.buffer_size)
+        self.frame_buf = deque(maxlen=self.frame_buffer_size)
+
+    def process_frame(self, x):
+        """preprocess frame along with the 3 previously seen frames"""
+        x = ftransforms.to_grayscale(x)
+        x = ftransforms.to_tensor(x)
+        # Handle flicker - TODO unnecessary with Openai gym?
+        x = torch.max(x, self.frame_buf[-1])
+        x = ftransforms.resize(x, [110, 84])
+        x = ftransforms.center_crop(x, 84)
+        self.frame_buf.append(x)
+
+    def get_state(self):
+        return torch.stack(tuple(self.frame_buf), dim=0)
 
     def reset(self):
-        self.state = self.env.reset()
+        x = self.env.reset()
+        for _ in range(self.frame_buffer_size):
+            self.process_frame(x)
+        self.state = self.get_state()
 
-    def step(self, state: np.ndarray):
+    def step(self, state: torch.Tensor, epsilon):
         # Choose action
-        if random.random() < self.eps:
+        if random.random() < epsilon:
             action = self.env.action_space.sample()
         else:
-            q_values = self.net(torch.tensor(state).to(self.net.device))
+            state = state.to(self.policy_net.device)
+            q_values = self.policy_net(state)
             action = q_values.argmax(dim=1)
 
         # Take step, observing reward
-        next_state, reward, done = self.env.step(action)
+        frame, reward, done = self.env.step(action)
+
+        # Process frame and obtain 4-frame state
+        next_state = self.process_frame(frame)
 
         # Store into replay buffer
         self.buf.add(Experience(self.state, action, reward, next_state, done))
 
         # Advance to next state
         self.state = next_state
-
         if done:
             self.reset()
 
         return reward, done
 
 
-class DQN(LightningModule):
-    def __init__(self, hparms):
-        super().__init__()
+def run(argv=[]):
+    p = ArgumentParser()
+    p.add_argument('--game',
+                   default='Breakout-v0',
+                   choices=['Breakout-v0', 'Pong-v0'])
+    p.add_argument('--batch_size', type=int, default=32)
+    p.add_argument('--episodes', type=int, default=100)
+    p.add_argument('--initial_exploration', default=1.0, type=float01)
+    p.add_argument('--final_exploration', default=0.1, type=float01)
+    p.add_argument('--final_exploration_frame', default=int(1e6), type=int)
+    p.add_argument('--replay_start_size', type=int, default=int(5e4))
+    p.add_argument('--discount_factor', default=0.99, type=float01)
+    p.add_argument('--target_update_frequency',
+                   default=int(1e4),
+                   help='update target net every N iterations')
+    p.add_argument('--agent_history_length',
+                   default=4,
+                   help='number of consecutive frames used in network')
+    p.add_argument('--action_repeat',
+                   type=int,
+                   default=4,
+                   help='agent sees only every k\'th frame')
+    p.add_argument('--update_frequency',
+                   type=int,
+                   default=4,
+                   help='number of actions between gradient steps')
+    args = p.parse_args(argv)
+
+    print('Setup networks, optimizers, agent, and environment...')
+    policy_net = DQN()
+    target_net = DQN()
+    loader = DataLoader()
+    agent = Agent(
+        policy_net=policy_net,
+        target_net=target_net,
+    )
+    agent.train()
+
+    print('Initialize replay buffer with random policy...')
+    raise
+
+    print('Begin training...')
+    for e in range(args.episodes):
         pass
 
-    def forward(self, x):
-        pass
-
-    def training_step(self, batch, batch_idx):
-        # forward pass
-        x, y = batch
-        y_hat = self(x)
-        loss = F.cross_entropy(y_hat, y)
-        log = {'train_loss': loss}
-        return {'loss': loss, 'log': log}
-
-    def test_step(self, batch, batch_idx):
-        x, y = batch
-        y_hat = self(x)
-        test_loss = F.cross_entropy(y_hat, y)
-        labels_hat = torch.argmax(y_hat, dim=1)
-        n_correct_pred = torch.sum(y == labels_hat).item()
-        return {
-            'test_loss': test_loss,
-            'n_correct_pred': n_correct_pred,
-            'n_pred': len(x)
-        }
-
-    def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(),
-                                lr=self.hparams.learning_rate)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
-        return [optimizer], [scheduler]
-
-    def prepare_data(self):
-        pass
-
-    def train_dataloader(self):
-        return DataLoader()
-
-    @staticmethod
-    def add_model_specific_args(parent_parser, root_dir):
-        parser = ArgumentParser(parents=[parent_parser])
-
-        parser.add_argument('--game',
-                            '-g',
-                            default='Breakout-v0',
-                            choices=['Breakout-v0', 'Pong-v0'])
-        return parser
-
-
-def run(s=[]):
-    parser = ArgumentParser(add_help=False)
-    parser = Trainer.add_argparse_args(parser)
-    parser = DQN.add_model_specific_args(parser)
-    hparams = parser.parse_args(s)
-
-    checkpoint_callback = ModelCheckpoint(verbose=True,
-                                          monitor='avg_q',
-                                          save_top_k=1,
-                                          save_weights_only=False,
-                                          mode='max')
-
-    model = DQN(hparams)
-    print(model)
-    trainer = Trainer.from_argparse_args(
-        hparams, checkpoint_callback=checkpoint_callback)
-    trainer.fit(model)
-    trainer.test()
+    raise
+    if batch_idx % self.target_update_frequency == 1:
+        self.target_net.load_state_dict(self.policy_net.state_dict())
 
 
 if __name__ == '__main__':
