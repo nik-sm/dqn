@@ -1,22 +1,21 @@
+from datetime import datetime
 import random
 import sys
 from argparse import ArgumentParser
 from collections import deque, namedtuple
 from random import sample
 
-import numpy as np
-
 import gym
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as ftransforms
-from model import DQN
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
-from utils import float01
 
-Experience = namedtuple('Experience', 'state action reward next_state done')
+from model import DQN
+from utils import float01
 
 
 class ReplayBuffer:  # (IterableDataset):
@@ -34,7 +33,11 @@ class ReplayBuffer:  # (IterableDataset):
                 f'size {self.size}, batch_size {self.batch_size}')
 
     def append(self, x):
-        self.buffer[self.index] = x
+        cpu_x = []
+        for i in range(len(x)):
+            cpu_x.append(x[i].to('cpu'))
+        del(x)
+        self.buffer[self.index] = cpu_x
         self.size = min(self.size + 1, self.capacity)
         self.index = (self.index + 1) % self.capacity
 
@@ -42,7 +45,8 @@ class ReplayBuffer:  # (IterableDataset):
         indices = sample(range(self.size), self.batch_size)
         experiences = [self.buffer[index] for index in indices]
         return [
-            torch.stack(x, dim=0).to(self.device) for x in zip(*experiences)
+            torch.stack(x, dim=0).to(self.device)
+            for x in zip(*experiences)
         ]
 
 
@@ -58,6 +62,7 @@ class Agent:
                  env_seed: int = 0,
                  frame_buffer_size: int = 4):
 
+        self.dummy = False
         self.device = device
         self.discount_factor = discount_factor
         self.game = game
@@ -102,16 +107,9 @@ class Agent:
         x = ftransforms.resize(x, [110, 84])
         x = ftransforms.to_tensor(x)
 
-        # Handle flicker - TODO unnecessary with Openai gym?
-        # NOTE - need to add to frame buf before modifying,
-        # otherwise all the max values get retained forever
-        # try:
-        #     x = torch.max(x, self.frame_buf[-1])
-        # except IndexError:
-        #     pass
-
         # right-append frame, dropping frame 0
-        self.frame_buf.append(x)
+        if not self.dummy:
+            self.frame_buf.append(x)
 
     def state_from_frame_buf(self):
         return torch.cat(tuple(self.frame_buf), dim=0).to(self.device)
@@ -137,15 +135,15 @@ class Agent:
             action = q_values.argmax(dim=1)
 
         # Take N steps, observing reward
-        reward = 0
+        reward = 0.
         done = False
         for _ in range(self.action_repeat):
             frame, next_reward, next_done, _ = self.env.step(action)
             self.process_frame(frame)
             if next_reward < 0:
-                reward -= 1
+                reward -= 1.
             elif next_reward > 0:
-                reward += 1
+                reward += 1.
             done = done or next_done  # ??
 
             # Process frame and obtain 4-frame state
@@ -153,9 +151,8 @@ class Agent:
 
             # Store into replay buffer
             self.replay_buf.append(
-                Experience(self.state, torch.tensor(action),
-                           torch.tensor(reward), next_state,
-                           torch.tensor(done)))
+                (self.state, torch.tensor(action), torch.tensor(reward),
+                 next_state, torch.tensor(done)))
 
         # Advance to next state
         self.state = next_state.to(self.device)
@@ -166,7 +163,8 @@ class Agent:
 
     def q_update(self):
         self.optimizer.zero_grad()
-        states, actions, rewards, next_states, dones = self.replay_buf.sample()
+        batch = self.replay_buf.sample()
+        states, actions, rewards, next_states, dones = batch
         y = torch.where(
             dones, rewards, rewards + self.discount_factor *
             torch.max(self.target_net(next_states), dim=1)[0])
@@ -224,13 +222,15 @@ def run(argv=[]):
         batch_size=args.batch_size,
         discount_factor=args.discount_factor,
     )
-    writer = SummaryWriter('tensorboard_logs')
+    time = datetime.now().isoformat()
+    writer = SummaryWriter(f'tensorboard_logs/{time}')
 
     torch.manual_seed(0)
     np.random.seed(0)
 
     # Train agent
     print('Begin training...')
+    agent.dummy = True
     for e in trange(args.episodes, desc='Episodes', leave=True):
         episode_reward = 0.
 
