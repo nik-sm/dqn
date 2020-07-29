@@ -63,7 +63,7 @@ class Agent:
         self.frame_buf = deque(maxlen=frame_buffer_size)
         self.replay_buf = ReplayBuffer(replay_buffer_size, batch_size)
 
-        self.env = gym.make(self.game)
+        self.env = gym.make(self.game, frameskip=1)
         self.env.seed(env_seed)
         self.reset()
 
