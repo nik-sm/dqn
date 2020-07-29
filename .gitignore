@@ -3,6 +3,7 @@
 venv/
 *__pycache__/
 *.mypy_cache/
+tensorboard_logs/
 
 # ondrej
 .idea

@@ -1,20 +1,20 @@
-from datetime import datetime
 import random
 import sys
 from argparse import ArgumentParser
 from collections import deque, namedtuple
+from datetime import datetime
 from random import sample
 
-import gym
 import numpy as np
+
+import gym
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as ftransforms
+from model import DQN
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
-
-from model import DQN
 from utils import float01
 
 
@@ -36,7 +36,7 @@ class ReplayBuffer:  # (IterableDataset):
         cpu_x = []
         for i in range(len(x)):
             cpu_x.append(x[i].to('cpu'))
-        del(x)
+        del (x)
         self.buffer[self.index] = cpu_x
         self.size = min(self.size + 1, self.capacity)
         self.index = (self.index + 1) % self.capacity
@@ -45,8 +45,7 @@ class ReplayBuffer:  # (IterableDataset):
         indices = sample(range(self.size), self.batch_size)
         experiences = [self.buffer[index] for index in indices]
         return [
-            torch.stack(x, dim=0).to(self.device)
-            for x in zip(*experiences)
+            torch.stack(x, dim=0).to(self.device) for x in zip(*experiences)
         ]
 
 
@@ -62,7 +61,6 @@ class Agent:
                  env_seed: int = 0,
                  frame_buffer_size: int = 4):
 
-        self.dummy = False
         self.device = device
         self.discount_factor = discount_factor
         self.game = game
@@ -108,8 +106,7 @@ class Agent:
         x = ftransforms.to_tensor(x)
 
         # right-append frame, dropping frame 0
-        if not self.dummy:
-            self.frame_buf.append(x)
+        self.frame_buf.append(x)
 
     def state_from_frame_buf(self):
         return torch.cat(tuple(self.frame_buf), dim=0).to(self.device)
@@ -182,7 +179,7 @@ def parse_args(argv):
                    default='Breakout-v0',
                    choices=['Breakout-v0', 'Pong-v0'])
     p.add_argument('--batch_size', type=int, default=32)
-    p.add_argument('--episodes', type=int, default=100)
+    p.add_argument('--frames', type=int, default=int(5e6))
     p.add_argument('--initial_exploration', default=1.0, type=float01)
     p.add_argument('--final_exploration', default=0.1, type=float01)
     p.add_argument('--final_exploration_frame', default=int(1e6), type=int)
@@ -207,6 +204,7 @@ def parse_args(argv):
                    default=4,
                    help='number of frames between gradient steps')
     p.add_argument('--episode_length', type=int, default=1000)
+    p.add_argument('--lr', type=float, default=1e-3)
     return p.parse_args(argv)
 
 
@@ -230,32 +228,35 @@ def run(argv=[]):
 
     # Train agent
     print('Begin training...')
-    agent.dummy = True
-    for e in trange(args.episodes, desc='Episodes', leave=True):
-        episode_reward = 0.
+    episode_reward = 0.
+    episode_steps = 0
+    for i in trange(args.frames, desc='Frames', leave=True):
+        # Compute epsilon
+        epsilon = float(args.final_exploration - args.initial_exploration)
+        epsilon /= args.final_exploration_frame
+        epsilon *= i
 
-        for i in trange(args.episode_length, desc='Frames', leave=False):
-            # Compute epsilon
-            epsilon = float(args.final_exploration - args.initial_exploration)
-            epsilon /= args.final_exploration_frame
-            epsilon *= e * args.episode_length + i
+        # Act on next frame
+        reward, done = agent.step(epsilon)
+        episode_reward += reward
+        episode_steps += 1
+        writer.add_scalar('Reward', reward, i)
 
-            # Act on next frame
-            reward, done = agent.step(epsilon)
-            episode_reward += reward
-            writer.add_scalar('Reward', reward, e * args.episode_length + i)
+        # Every K steps, update policy net
+        if i % args.policy_update_frequency == 0:
+            td_error = agent.q_update()
+            writer.add_scalar('TD_Error', td_error, i)
 
-            # Every K steps, update policy net
-            if i % args.policy_update_frequency == 0:
-                td_error = agent.q_update()
-                writer.add_scalar('TD_Error', td_error,
-                                  e * args.episode_length + i)
+        # Every C steps, update target net
+        if i % args.target_update_frequency == 0:
+            agent.target_net.load_state_dict(agent.policy_net.state_dict())
 
-            # Every C steps, update target net
-            if i % args.target_update_frequency == 0:
-                agent.target_net.load_state_dict(agent.policy_net.state_dict())
-        writer.add_scalar('Avg_Episode_Reward', episode_reward,
-                          e * args.episode_length)
+        if done:
+            writer.add_scalar('Avg_Episode_Reward',
+                              episode_reward / episode_steps, i)
+            agent.reset()
+            episode_reward = 0.
+            episode_steps = 0
 
 
 """
