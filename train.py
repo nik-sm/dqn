@@ -187,7 +187,7 @@ def parse_args(argv):
                    help='init random steps')
     p.add_argument('--discount_factor', default=0.99, type=float01)
     p.add_argument('--target_update_frequency',
-                   default=1e4,
+                   default=int(1e4),
                    help='update target net every N iterations')
     p.add_argument('--frame_skip',
                    default=4,
