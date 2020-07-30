@@ -118,7 +118,7 @@ class Agent:
 
     def reset(self):
         """Reset the end, pre-populate self.frame_buf and self.state"""
-        self.state = torch.tensor(self.env.reset(), dtype=torch.float32) / 255.
+        self.state = self.env.reset()
 
     @torch.no_grad()
     def step(self, epsilon):
@@ -137,7 +137,7 @@ class Agent:
 
         # Apply action
         next_state, reward, done, _ = self.env.step(action)
-        next_state = torch.tensor(next_state, dtype=torch.float32) / 255.
+
         if reward > 0:
             reward = 1.0
         elif reward < 0:
@@ -145,8 +145,8 @@ class Agent:
 
         # Store into replay buffer
         self.replay_buf.append(
-            (torch.tensor(np.array(self.state), dtype=torch.float32, device="cpu"), action, reward,
-             torch.tensor(np.array(next_state), dtype=torch.float32, device="cpu"), done))
+            (torch.tensor(np.array(self.state), dtype=torch.float32, device="cpu") / 255.0, action, reward,
+             torch.tensor(np.array(next_state), dtype=torch.float32, device="cpu") / 255.0, done))
 
         # Advance to next state
         self.state = next_state
