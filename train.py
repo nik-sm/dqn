@@ -46,10 +46,12 @@ class ReplayBuffer:  # (IterableDataset):
 
         states, actions, rewards, next_states, dones = zip(*experiences)
 
-        states = torch.tensor(states, dtype=torch.float32, device=self.device) / 255.0
+        # stack will copy the tensors, so .to() will no affect the data in the buffer
+        states = torch.stack(states, dim=0).to(self.device)
+        next_states = torch.stack(next_states, dim=0).to(self.device)
+
         actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(-1)
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device) / 255.0
         dones = torch.tensor(dones, dtype=torch.bool, device=self.device)
 
         return states, actions, rewards, next_states, dones
@@ -133,8 +135,8 @@ class Agent:
 
         # Store into replay buffer
         self.replay_buf.append(
-            (self.state, action, reward,
-             self.next_state, done))
+            (torch.tensor(np.array(self.state), dtype=torch.float32, device="cpu"), action, reward,
+             torch.tensor(np.array(self.next_state), dtype=torch.float32, device="cpu"), done))
 
         # Advance to next state
         self.state = self.next_state
