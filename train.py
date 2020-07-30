@@ -11,8 +11,7 @@ import torch
 import torch.nn.functional as F
 from gym.wrappers import AtariPreprocessing, FrameStack
 from model import DQN
-from torch.optim import Adam
-# from torch.utils.data import DataLoader, IterableDataset
+from torch.optim import RMSprop
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 from utils import float01, toInt
@@ -47,21 +46,12 @@ class ReplayBuffer:
         next_states = torch.stack(next_states, dim=0).to(self.device)
 
         actions = torch.tensor(actions, dtype=torch.long, device=self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+        rewards = torch.tensor(rewards,
+                               dtype=torch.float32,
+                               device=self.device)
         dones = torch.tensor(dones, dtype=torch.bool, device=self.device)
 
         return states, actions, rewards, next_states, dones
-
-
-# class ExperienceDataset(IterableDataset):
-#     """Thin wrapper dataset for multiprocess loading"""
-#     def __init__(self, buf, batch_size):
-#         self.buf = buf
-#         self.batch_size = batch_size
-#
-#     def __iter__(self):
-#         while True:
-#             yield self.buf.sample(self.batch_size)
 
 
 class Agent:
@@ -71,6 +61,9 @@ class Agent:
                  replay_start_size: int,
                  batch_size: int,
                  discount_factor: float,
+                 lr: float,
+                 # beta1: float,
+                 # beta2: float,
                  device: str = 'cuda:0',
                  env_seed: int = 0,
                  frame_buffer_size: int = 4):
@@ -81,11 +74,6 @@ class Agent:
         self.batch_size = batch_size
 
         self.replay_buf = ReplayBuffer(capacity=replay_buffer_capacity)
-        # self.loader_it = iter(
-        #     DataLoader(ExperienceDataset(self.replay_buf, batch_size),
-        #                num_workers=0,
-        #                pin_memory=True,
-        #                batch_size=None))
 
         self.env = FrameStack(AtariPreprocessing(gym.make(self.game),
                                                  noop_max=0,
@@ -98,7 +86,10 @@ class Agent:
         n_action = self.env.action_space.n
         self.policy_net = DQN(n_action).to(self.device)
         self.target_net = DQN(n_action).to(self.device)
-        self.optimizer = Adam(self.policy_net.parameters())
+        self.optimizer = RMSprop(self.policy_net.parameters(),
+                                 alpha=0.95,
+                                 momentum=0.95,
+                                 eps=0.01)
 
         print(self)
         self._fill_replay_buf(replay_start_size)
@@ -145,8 +136,12 @@ class Agent:
 
         # Store into replay buffer
         self.replay_buf.append(
-            (torch.tensor(np.array(self.state), dtype=torch.float32, device="cpu") / 255.0, action, reward,
-             torch.tensor(np.array(next_state), dtype=torch.float32, device="cpu") / 255.0, done))
+            (torch.tensor(
+                np.array(self.state), dtype=torch.float32, device="cpu") /
+             255.0, action, reward,
+             torch.tensor(
+                 np.array(next_state), dtype=torch.float32, device="cpu") /
+             255.0, done))
 
         # Advance to next state
         self.state = next_state
@@ -164,7 +159,8 @@ class Agent:
         y = torch.where(
             dones, rewards, rewards + self.discount_factor *
             torch.max(self.target_net(next_states), dim=1)[0])
-        predicted_values = torch.gather(self.policy_net(states), 1, actions.unsqueeze(-1)).squeeze(-1)
+        predicted_values = torch.gather(self.policy_net(states), 1,
+                                        actions.unsqueeze(-1)).squeeze(-1)
         loss = F.smooth_l1_loss(y, predicted_values)
         loss.backward()
         self.optimizer.step()
@@ -176,9 +172,9 @@ def parse_args(argv):
     p.add_argument('--game', default='BreakoutNoFrameskip-v0')
     p.add_argument('--batch_size', type=int, default=32)
     p.add_argument('--frames', type=toInt, default=int(5e6))
-    p.add_argument('--initial_exploration', default=1.0, type=float01)
-    p.add_argument('--final_exploration', default=0.1, type=float01)
-    p.add_argument('--final_exploration_frame', type=toInt, default=int(1e6))
+    p.add_argument('--max_eps', default=1.0, type=float01)
+    p.add_argument('--min_eps', default=0.1, type=float01)
+    p.add_argument('--eps_duration', type=toInt, default=int(1e6))
     p.add_argument('--replay_buffer_capacity', type=toInt, default=int(1e6))
     p.add_argument('--replay_start_size',
                    type=toInt,
@@ -196,7 +192,9 @@ def parse_args(argv):
                    default=4,
                    help='number of frames between gradient steps')
     p.add_argument('--episode_length', type=int, default=1000)
-    p.add_argument('--lr', type=float, default=1e-3)
+    p.add_argument('--lr', type=float, default=1e-4)
+    # p.add_argument('--beta1', type=float, default=0.5)
+    # p.add_argument('--beta2', type=float, default=0.999)
     return p.parse_args(argv)
 
 
@@ -211,6 +209,9 @@ def run(argv=[]):
         replay_start_size=args.replay_start_size,
         batch_size=args.batch_size,
         discount_factor=args.discount_factor,
+        lr=args.lr,
+        # beta1=args.beta1,
+        # beta2=args.beta2,
     )
     time = datetime.now().isoformat()
     writer = SummaryWriter(f'tensorboard_logs/{time}')
@@ -225,9 +226,9 @@ def run(argv=[]):
     bar = trange(args.frames, desc='Frames', leave=True)
     for i in bar:
         # Compute epsilon
-        epsilon = float(abs(args.final_exploration - args.initial_exploration))
-        epsilon /= args.final_exploration_frame
-        epsilon = max(args.final_exploration, 1 - i * epsilon)
+        epsilon = max(
+            args.min_eps,
+            1 - i * (args.max_eps - args.min_eps) / args.eps_duration)
         if i % 1000 == 0:
             bar.set_postfix(epsilon=epsilon)
 
@@ -249,6 +250,7 @@ def run(argv=[]):
         if done:
             writer.add_scalar('Avg_Episode_Reward',
                               episode_reward / episode_steps, i)
+            writer.add_scalar('Episode_length', episode_steps, i)
             agent.reset()
             episode_reward = 0.
             episode_steps = 0
