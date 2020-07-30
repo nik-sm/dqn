@@ -9,13 +9,13 @@ import numpy as np
 import gym
 import torch
 import torch.nn.functional as F
-from gym.wrappers import FrameStack, AtariPreprocessing
+from gym.wrappers import AtariPreprocessing, FrameStack
 from model import DQN
 from torch.optim import Adam
 # from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
-from utils import float01
+from utils import float01, toInt
 
 
 class ReplayBuffer:
@@ -180,18 +180,18 @@ def parse_args(argv):
     p = ArgumentParser()
     p.add_argument('--game', default='BreakoutNoFrameskip-v0')
     p.add_argument('--batch_size', type=int, default=32)
-    p.add_argument('--frames', type=int, default=int(5e6))
+    p.add_argument('--frames', type=toInt, default=5e6)
     p.add_argument('--initial_exploration', default=1.0, type=float01)
     p.add_argument('--final_exploration', default=0.1, type=float01)
-    p.add_argument('--final_exploration_frame', default=int(1e6), type=int)
-    p.add_argument('--replay_buffer_capacity', type=int, default=int(1e6))
+    p.add_argument('--final_exploration_frame', type=toInt, default=1e6)
+    p.add_argument('--replay_buffer_capacity', type=toInt, default=1e6)
     p.add_argument('--replay_start_size',
-                   type=int,
-                   default=int(5e4),
-                   help='initial random steps to populate buffer')
+                   type=toInt,
+                   default=5e4,
+                   help='init random steps')
     p.add_argument('--discount_factor', default=0.99, type=float01)
     p.add_argument('--target_update_frequency',
-                   default=int(1e4),
+                   default=1e4,
                    help='update target net every N iterations')
     p.add_argument('--frame_skip',
                    default=4,
