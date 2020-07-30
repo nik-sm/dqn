@@ -1,68 +1,76 @@
 import random
 import sys
 from argparse import ArgumentParser
-from collections import deque, namedtuple
 from datetime import datetime
 from random import sample
 
 import numpy as np
 
 import gym
-from gym.wrappers.atari_preprocessing import AtariPreprocessing
-from gym.wrappers.frame_stack import FrameStack
 import torch
 import torch.nn.functional as F
-import torchvision.transforms.functional as ftransforms
+from gym.wrappers import FrameStack, AtariPreprocessing
 from model import DQN
 from torch.optim import Adam
+# from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 from utils import float01
 
 
-class ReplayBuffer:  # (IterableDataset):
-    """Store N previous experiences for random sampling"""
-    def __init__(self, capacity, batch_size, device='cuda:0'):
+class ReplayBuffer:
+    """Shared buffer for all worker processes"""
+    def __init__(self, capacity, device='cuda:0'):
         self.buffer = [None] * capacity
         self.capacity = capacity
-        self.batch_size = batch_size
         self.index = 0
         self.size = 0
         self.device = device
 
     def __repr__(self):
         return (f'ReplayBuffer: capacity {self.capacity}, ' +
-                f'size {self.size}, batch_size {self.batch_size}')
+                f'size {self.size}')
 
     def append(self, x):
-
         self.buffer[self.index] = x
         self.size = min(self.size + 1, self.capacity)
         self.index = (self.index + 1) % self.capacity
 
-    def sample(self):
-        indices = sample(range(self.size), self.batch_size)
+    def sample(self, batch_size):
+        indices = sample(range(self.size), batch_size)
         experiences = [self.buffer[index] for index in indices]
 
-        states, actions, rewards, next_states, dones = zip(*experiences)
+        states, actions, rewards, next_states, dones = [
+            torch.stack(x) for x in zip(*experiences)
+        ]
 
-        states = torch.tensor(states, dtype=torch.float32, device=self.device) / 255.0
-        actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(-1)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device) / 255.0
-        dones = torch.tensor(dones, dtype=torch.bool, device=self.device)
+        # states = torch.zeros(32, 4, 84, 84, dtype=torch.float32)
+        # actions = torch.zeros(32, 1, dtype=torch.long)
+        # rewards = torch.zeros(32, dtype=torch.float32)
+        # next_states = torch.zeros(32, 4, 84, 84, dtype=torch.float32)
+        # dones = torch.zeros(32, dtype=torch.bool)
 
         return states, actions, rewards, next_states, dones
+
+
+# class ExperienceDataset(IterableDataset):
+#     """Thin wrapper dataset for multiprocess loading"""
+#     def __init__(self, buf, batch_size):
+#         self.buf = buf
+#         self.batch_size = batch_size
+#
+#     def __iter__(self):
+#         while True:
+#             yield self.buf.sample(self.batch_size)
 
 
 class Agent:
     def __init__(self,
                  game: str,
-                 replay_buffer_size: int,
+                 replay_buffer_capacity: int,
                  replay_start_size: int,
                  batch_size: int,
                  discount_factor: float,
-                 action_repeat: int = 4,
                  device: str = 'cuda:0',
                  env_seed: int = 0,
                  frame_buffer_size: int = 4):
@@ -70,14 +78,20 @@ class Agent:
         self.device = device
         self.discount_factor = discount_factor
         self.game = game
-        self.action_repeat = action_repeat
+        self.batch_size = batch_size
 
-        self.replay_buf = ReplayBuffer(replay_buffer_size, batch_size)
+        self.replay_buf = ReplayBuffer(capacity=replay_buffer_capacity)
+        # self.loader_it = iter(
+        #     DataLoader(ExperienceDataset(self.replay_buf, batch_size),
+        #                num_workers=0,
+        #                pin_memory=True,
+        #                batch_size=None))
 
-        self.env = FrameStack(
-            AtariPreprocessing(gym.make(self.game), noop_max=0, terminal_on_life_loss=True, scale_obs=False),
-            num_stack=frame_buffer_size, lz4_compress=False
-        )
+        self.env = FrameStack(AtariPreprocessing(gym.make(self.game),
+                                                 noop_max=0,
+                                                 terminal_on_life_loss=True,
+                                                 scale_obs=False),
+                              num_stack=frame_buffer_size)
         self.env.seed(env_seed)
         self.reset()
 
@@ -91,11 +105,8 @@ class Agent:
 
     def __repr__(self):
         return '\n'.join([
-            'Agent:',
-            f'Game: {self.game}',
-            f'Device: {self.device}',
-            f'Policy net: {self.policy_net}',
-            f'Target net: {self.target_net}',
+            'Agent:', f'Game: {self.game}', f'Device: {self.device}',
+            f'Policy net: {self.policy_net}', f'Target net: {self.target_net}',
             f'Replay buf: {self.replay_buf}'
         ])
 
@@ -107,7 +118,7 @@ class Agent:
 
     def reset(self):
         """Reset the end, pre-populate self.frame_buf and self.state"""
-        self.state = self.env.reset()
+        self.state = torch.tensor(self.env.reset(), dtype=torch.float32) / 255.
 
     @torch.no_grad()
     def step(self, epsilon):
@@ -118,26 +129,31 @@ class Agent:
         if random.random() <= epsilon:
             action = self.env.action_space.sample()
         else:
-            torch_state = torch.tensor(self.state, dtype=torch.float32, device=self.device).unsqueeze(0) / 255.0
+            torch_state = torch.tensor(self.state,
+                                       dtype=torch.float32,
+                                       device=self.device).unsqueeze(0) / 255.0
             q_values = self.policy_net(torch_state)
             action = int(q_values.argmax(dim=1).item())
 
-        frame, reward, done, _ = self.env.step(action)
-
+        # Apply action
+        next_state, reward, done, _ = self.env.step(action)
+        next_state = torch.tensor(next_state, dtype=torch.float32) / 255.
         if reward > 0:
             reward = 1.0
         elif reward < 0:
             reward = -1.0
 
-        self.next_state = frame
-
         # Store into replay buffer
-        self.replay_buf.append(
-            (self.state, action, reward,
-             self.next_state, done))
+        self.replay_buf.append((
+            self.state,
+            torch.tensor(action, dtype=torch.long),
+            torch.tensor(reward, dtype=torch.float32),
+            next_state,
+            torch.tensor(done, dtype=torch.bool),
+        ))
 
         # Advance to next state
-        self.state = self.next_state
+        self.state = next_state
         if done:
             self.reset()
 
@@ -145,13 +161,15 @@ class Agent:
 
     def q_update(self):
         self.optimizer.zero_grad()
-        batch = self.replay_buf.sample()
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones = [
+            x.to(self.device) for x in self.replay_buf.sample(self.batch_size)
+        ]
+
         y = torch.where(
             dones, rewards, rewards + self.discount_factor *
             torch.max(self.target_net(next_states), dim=1)[0])
         predicted_values = torch.gather(self.policy_net(states), 1,
-                                        actions).squeeze()
+                                        actions.unsqueeze(-1)).squeeze(-1)
         loss = F.smooth_l1_loss(y, predicted_values)
         loss.backward()
         self.optimizer.step()
@@ -160,15 +178,13 @@ class Agent:
 
 def parse_args(argv):
     p = ArgumentParser()
-    p.add_argument('--game',
-                   default='Breakout-v0')
-                   #choices=['Breakout-v0', 'Pong-v0'])
+    p.add_argument('--game', default='BreakoutNoFrameskip-v0')
     p.add_argument('--batch_size', type=int, default=32)
     p.add_argument('--frames', type=int, default=int(5e6))
     p.add_argument('--initial_exploration', default=1.0, type=float01)
     p.add_argument('--final_exploration', default=0.1, type=float01)
     p.add_argument('--final_exploration_frame', default=int(1e6), type=int)
-    p.add_argument('--replay_buffer_size', type=int, default=int(1e6))
+    p.add_argument('--replay_buffer_capacity', type=int, default=int(1e6))
     p.add_argument('--replay_start_size',
                    type=int,
                    default=int(5e4),
@@ -177,13 +193,9 @@ def parse_args(argv):
     p.add_argument('--target_update_frequency',
                    default=int(1e4),
                    help='update target net every N iterations')
-    p.add_argument('--agent_history_length',
+    p.add_argument('--frame_skip',
                    default=4,
-                   help='number of consecutive frames used in network')
-    p.add_argument('--action_repeat',
-                   type=int,
-                   default=4,
-                   help='agent sees only every k\'th frame')
+                   help='number of frames between agent decisions')
     p.add_argument('--policy_update_frequency',
                    type=int,
                    default=4,
@@ -200,7 +212,7 @@ def run(argv=[]):
     print('Create agent...')
     agent = Agent(
         game=args.game,
-        replay_buffer_size=args.replay_buffer_size,
+        replay_buffer_capacity=args.replay_buffer_capacity,
         replay_start_size=args.replay_start_size,
         batch_size=args.batch_size,
         discount_factor=args.discount_factor,
@@ -246,12 +258,6 @@ def run(argv=[]):
             episode_reward = 0.
             episode_steps = 0
 
-
-"""
-Agent TODO:
-- At time step t, set every pixel i = max(p_{i, t}, p_{i, t-1})
-  (compensates for flickering, maybe handled by openai gym?)
-"""
 
 if __name__ == '__main__':
     run(sys.argv[1:])
