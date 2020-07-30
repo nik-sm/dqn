@@ -40,15 +40,13 @@ class ReplayBuffer:
         indices = sample(range(self.size), batch_size)
         experiences = [self.buffer[index] for index in indices]
 
-        states, actions, rewards, next_states, dones = [
-            torch.stack(x) for x in zip(*experiences)
-        ]
+        states, actions, rewards, next_states, dones = zip(*experiences)
 
         # stack will copy the tensors, so .to() will no affect the data in the buffer
         states = torch.stack(states, dim=0).to(self.device)
         next_states = torch.stack(next_states, dim=0).to(self.device)
 
-        actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(-1)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         dones = torch.tensor(dones, dtype=torch.bool, device=self.device)
 
@@ -148,7 +146,7 @@ class Agent:
         # Store into replay buffer
         self.replay_buf.append(
             (torch.tensor(np.array(self.state), dtype=torch.float32, device="cpu"), action, reward,
-             torch.tensor(np.array(self.next_state), dtype=torch.float32, device="cpu"), done))
+             torch.tensor(np.array(next_state), dtype=torch.float32, device="cpu"), done))
 
         # Advance to next state
         self.state = next_state
@@ -166,8 +164,7 @@ class Agent:
         y = torch.where(
             dones, rewards, rewards + self.discount_factor *
             torch.max(self.target_net(next_states), dim=1)[0])
-        predicted_values = torch.gather(self.policy_net(states), 1,
-                                        actions.unsqueeze(-1)).squeeze(-1)
+        predicted_values = torch.gather(self.policy_net(states), 1, actions.unsqueeze(-1)).squeeze(-1)
         loss = F.smooth_l1_loss(y, predicted_values)
         loss.backward()
         self.optimizer.step()
@@ -178,11 +175,11 @@ def parse_args(argv):
     p = ArgumentParser()
     p.add_argument('--game', default='BreakoutNoFrameskip-v0')
     p.add_argument('--batch_size', type=int, default=32)
-    p.add_argument('--frames', type=toInt, default=5e6)
+    p.add_argument('--frames', type=toInt, default=int(5e6))
     p.add_argument('--initial_exploration', default=1.0, type=float01)
     p.add_argument('--final_exploration', default=0.1, type=float01)
-    p.add_argument('--final_exploration_frame', type=toInt, default=1e6)
-    p.add_argument('--replay_buffer_capacity', type=toInt, default=1e6)
+    p.add_argument('--final_exploration_frame', type=toInt, default=int(1e6))
+    p.add_argument('--replay_buffer_capacity', type=toInt, default=int(1e6))
     p.add_argument('--replay_start_size',
                    type=toInt,
                    default=5e4,
