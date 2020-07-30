@@ -182,7 +182,7 @@ def parse_args(argv):
     p.add_argument('--replay_buffer_capacity', type=toInt, default=int(1e6))
     p.add_argument('--replay_start_size',
                    type=toInt,
-                   default=5e4,
+                   default=int(5e4),
                    help='init random steps')
     p.add_argument('--discount_factor', default=0.99, type=float01)
     p.add_argument('--target_update_frequency',
