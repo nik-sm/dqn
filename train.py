@@ -55,18 +55,19 @@ class ReplayBuffer:
 
 
 class Agent:
-    def __init__(self,
-                 game: str,
-                 replay_buffer_capacity: int,
-                 replay_start_size: int,
-                 batch_size: int,
-                 discount_factor: float,
-                 lr: float,
-                 # beta1: float,
-                 # beta2: float,
-                 device: str = 'cuda:0',
-                 env_seed: int = 0,
-                 frame_buffer_size: int = 4):
+    def __init__(
+            self,
+            game: str,
+            replay_buffer_capacity: int,
+            replay_start_size: int,
+            batch_size: int,
+            discount_factor: float,
+            lr: float,
+            # beta1: float,
+            # beta2: float,
+            device: str = 'cuda:0',
+            env_seed: int = 0,
+            frame_buffer_size: int = 4):
 
         self.device = device
         self.discount_factor = discount_factor
@@ -167,6 +168,10 @@ class Agent:
         return (y - predicted_values).abs().mean()
 
 
+def save(agent, path):
+    torch.save(agent.policy_net.state_dict(), path)
+
+
 def parse_args(argv):
     p = ArgumentParser()
     p.add_argument('--game', default='BreakoutNoFrameskip-v0')
@@ -192,7 +197,8 @@ def parse_args(argv):
                    default=4,
                    help='number of frames between gradient steps')
     p.add_argument('--episode_length', type=int, default=1000)
-    p.add_argument('--lr', type=float, default=1e-4)
+    p.add_argument('--lr', type=float, default=0.00025)
+    p.add_argument('--save_path', type=str, default='checkpoint.pt')
     # p.add_argument('--beta1', type=float, default=0.5)
     # p.add_argument('--beta2', type=float, default=0.999)
     return p.parse_args(argv)
@@ -223,37 +229,45 @@ def run(argv=[]):
     print('Begin training...')
     episode_reward = 0.
     episode_steps = 0
-    bar = trange(args.frames, desc='Frames', leave=True)
-    for i in bar:
-        # Compute epsilon
-        epsilon = max(
-            args.min_eps,
-            1 - i * (args.max_eps - args.min_eps) / args.eps_duration)
-        if i % 1000 == 0:
-            bar.set_postfix(epsilon=epsilon)
+    try:
+        for i in trange(args.frames, desc='Frames', leave=True):
+            # Compute epsilon
+            epsilon = max(
+                args.min_eps,
+                1 - i * (args.max_eps - args.min_eps) / args.eps_duration)
+            if i % 1000 == 0:
+                writer.add_scalar('Epsilon', epsilon, i)
 
-        # Act on next frame
-        reward, done = agent.step(epsilon)
-        episode_reward += reward
-        episode_steps += 1
-        writer.add_scalar('Reward', reward, i)
+            if i % 10000 == 0:
+                for name, p in agent.policy_net.named_parameters():
+                    writer.add_histogram(name, p, bins='auto')
 
-        # Every K steps, update policy net
-        if i % args.policy_update_frequency == 0:
-            td_error = agent.q_update()
-            writer.add_scalar('TD_Error', td_error, i)
+            # Act on next frame
+            reward, done = agent.step(epsilon)
+            episode_reward += reward
+            episode_steps += 1
+            writer.add_scalar('Reward', reward, i)
 
-        # Every C steps, update target net
-        if i % args.target_update_frequency == 0:
-            agent.target_net.load_state_dict(agent.policy_net.state_dict())
+            # Every K steps, update policy net
+            if i % args.policy_update_frequency == 0:
+                td_error = agent.q_update()
+                writer.add_scalar('TD_Error', td_error, i)
 
-        if done:
-            writer.add_scalar('Avg_Episode_Reward',
-                              episode_reward / episode_steps, i)
-            writer.add_scalar('Episode_length', episode_steps, i)
-            agent.reset()
-            episode_reward = 0.
-            episode_steps = 0
+            # Every C steps, update target net
+            if i % args.target_update_frequency == 0:
+                agent.target_net.load_state_dict(agent.policy_net.state_dict())
+
+            if done:
+                writer.add_scalar('Avg_Episode_Reward',
+                                  episode_reward / episode_steps, i)
+                writer.add_scalar('Episode_length', episode_steps, i)
+                agent.reset()
+                episode_reward = 0.
+                episode_steps = 0
+    except KeyboardInterrupt:
+        pass
+    if args.save_path is not None:
+        save(agent, args.save_path)
 
 
 if __name__ == '__main__':
