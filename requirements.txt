@@ -7,6 +7,7 @@ torch
 torchvision
 gym
 # gym[atari] # TODO - doesn't work from requirements?
+git+https://github.com/kenjyoung/MinAtar.git
 
 # https://stackoverflow.com/questions/52726475/display-openai-gym-in-jupyter-notebook-only
 pyvirtualdisplay

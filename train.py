@@ -3,18 +3,18 @@ import sys
 from argparse import ArgumentParser
 from datetime import datetime
 from random import sample
-
-import numpy as np
+from typing import Tuple
 
 import gym
+import numpy as np
 import torch
-import torch.nn.functional as F
 from gym.wrappers import AtariPreprocessing, FrameStack
-from model import DQN
 from torch.optim import RMSprop
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
-from utils import float01, toInt
+
+from model import DQN
+from utils import float01, huber, toInt
 
 
 class ReplayBuffer:
@@ -30,7 +30,7 @@ class ReplayBuffer:
         return (f'ReplayBuffer: capacity {self.capacity}, ' +
                 f'size {self.size}')
 
-    def append(self, x):
+    def append(self, x: Tuple[torch.Tensor, int, float, torch.Tensor, bool]):
         self.buffer[self.index] = x
         self.size = min(self.size + 1, self.capacity)
         self.index = (self.index + 1) % self.capacity
@@ -41,7 +41,8 @@ class ReplayBuffer:
 
         states, actions, rewards, next_states, dones = zip(*experiences)
 
-        # stack will copy the tensors, so .to() will no affect the data in the buffer
+        # stack will copy the tensors, so .to() will not affect
+        # the data in the buffer
         states = torch.stack(states, dim=0).to(self.device)
         next_states = torch.stack(next_states, dim=0).to(self.device)
 
@@ -55,19 +56,16 @@ class ReplayBuffer:
 
 
 class Agent:
-    def __init__(
-            self,
-            game: str,
-            replay_buffer_capacity: int,
-            replay_start_size: int,
-            batch_size: int,
-            discount_factor: float,
-            lr: float,
-            # beta1: float,
-            # beta2: float,
-            device: str = 'cuda:0',
-            env_seed: int = 0,
-            frame_buffer_size: int = 4):
+    def __init__(self,
+                 game: str,
+                 replay_buffer_capacity: int,
+                 replay_start_size: int,
+                 batch_size: int,
+                 discount_factor: float,
+                 lr: float,
+                 device: str = 'cuda:0',
+                 env_seed: int = 0,
+                 frame_buffer_size: int = 4):
 
         self.device = device
         self.discount_factor = discount_factor
@@ -76,21 +74,24 @@ class Agent:
 
         self.replay_buf = ReplayBuffer(capacity=replay_buffer_capacity)
 
-        self.env = FrameStack(AtariPreprocessing(gym.make(self.game),
-                                                 noop_max=0,
-                                                 terminal_on_life_loss=True,
-                                                 scale_obs=False),
-                              num_stack=frame_buffer_size)
+        self.env = FrameStack(
+            AtariPreprocessing(
+                gym.make(self.game),
+                # noop_max=0,
+                # terminal_on_life_loss=True,
+                scale_obs=False),
+            num_stack=frame_buffer_size)
         self.env.seed(env_seed)
         self.reset()
 
-        n_action = self.env.action_space.n
-        self.policy_net = DQN(n_action).to(self.device)
-        self.target_net = DQN(n_action).to(self.device)
-        self.optimizer = RMSprop(self.policy_net.parameters(),
-                                 alpha=0.95,
-                                 momentum=0.95,
-                                 eps=0.01)
+        self.n_action = self.env.action_space.n
+        self.policy_net = DQN(self.n_action).to(self.device)
+        self.target_net = DQN(self.n_action).to(self.device).eval()
+        self.optimizer = RMSprop(
+            self.policy_net.parameters(),
+            alpha=0.95,
+            # momentum=0.95,
+            eps=0.01)
 
         print(self)
         self._fill_replay_buf(replay_start_size)
@@ -119,6 +120,7 @@ class Agent:
         """
         # Choose action
         if random.random() <= epsilon:
+            q_values = None
             action = self.env.action_space.sample()
         else:
             torch_state = torch.tensor(self.state,
@@ -129,11 +131,7 @@ class Agent:
 
         # Apply action
         next_state, reward, done, _ = self.env.step(action)
-
-        if reward > 0:
-            reward = 1.0
-        elif reward < 0:
-            reward = -1.0
+        reward = max(-1.0, min(reward, 1.0))
 
         # Store into replay buffer
         self.replay_buf.append(
@@ -149,7 +147,7 @@ class Agent:
         if done:
             self.reset()
 
-        return reward, done
+        return reward, q_values, done
 
     def q_update(self):
         self.optimizer.zero_grad()
@@ -157,12 +155,15 @@ class Agent:
             x.to(self.device) for x in self.replay_buf.sample(self.batch_size)
         ]
 
-        y = torch.where(
-            dones, rewards, rewards + self.discount_factor *
-            torch.max(self.target_net(next_states), dim=1)[0])
-        predicted_values = torch.gather(self.policy_net(states), 1,
-                                        actions.unsqueeze(-1)).squeeze(-1)
-        loss = F.smooth_l1_loss(y, predicted_values)
+        with torch.no_grad():
+            y = torch.where(
+                dones, rewards, rewards +
+                self.discount_factor * self.target_net(next_states).max(1)[0])
+
+        predicted_values = self.policy_net(states).gather(
+            1, actions.unsqueeze(-1)).squeeze(-1)
+        loss = huber(y, predicted_values, 2.)
+        # loss = F.smooth_l1_loss(y, predicted_values)
         loss.backward()
         self.optimizer.step()
         return (y - predicted_values).abs().mean()
@@ -199,8 +200,6 @@ def parse_args(argv):
     p.add_argument('--episode_length', type=int, default=1000)
     p.add_argument('--lr', type=float, default=0.00025)
     p.add_argument('--save_path', type=str, default='checkpoint.pt')
-    # p.add_argument('--beta1', type=float, default=0.5)
-    # p.add_argument('--beta2', type=float, default=0.999)
     return p.parse_args(argv)
 
 
@@ -216,8 +215,6 @@ def run(argv=[]):
         batch_size=args.batch_size,
         discount_factor=args.discount_factor,
         lr=args.lr,
-        # beta1=args.beta1,
-        # beta2=args.beta2,
     )
     time = datetime.now().isoformat()
     writer = SummaryWriter(f'tensorboard_logs/{time}')
@@ -235,15 +232,25 @@ def run(argv=[]):
             epsilon = max(
                 args.min_eps,
                 1 - i * (args.max_eps - args.min_eps) / args.eps_duration)
+
             if i % 1000 == 0:
                 writer.add_scalar('Epsilon', epsilon, i)
 
             if i % 10000 == 0:
                 for name, p in agent.policy_net.named_parameters():
-                    writer.add_histogram(name, p, bins='auto')
+                    writer.add_histogram('policy' + name, p, bins='auto')
+
+                for name, p in agent.target_net.named_parameters():
+                    writer.add_histogram('target' + name, p, bins='auto')
 
             # Act on next frame
-            reward, done = agent.step(epsilon)
+            reward, q_values, done = agent.step(epsilon)
+
+            if q_values is not None:
+                q_values = q_values.squeeze()
+                for j in range(agent.n_action):
+                    writer.add_scalar(f'Q_values/{j}', q_values[j], i)
+
             episode_reward += reward
             episode_steps += 1
             writer.add_scalar('Reward', reward, i)
@@ -256,14 +263,16 @@ def run(argv=[]):
             # Every C steps, update target net
             if i % args.target_update_frequency == 0:
                 agent.target_net.load_state_dict(agent.policy_net.state_dict())
+                agent.target_net.eval()
 
             if done:
-                writer.add_scalar('Avg_Episode_Reward',
+                writer.add_scalar('Reward_per_step',
                                   episode_reward / episode_steps, i)
+                writer.add_scalar('Total_episode_reward', episode_reward, i)
                 writer.add_scalar('Episode_length', episode_steps, i)
-                agent.reset()
                 episode_reward = 0.
                 episode_steps = 0
+
     except KeyboardInterrupt:
         pass
     if args.save_path is not None:

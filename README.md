@@ -76,3 +76,12 @@ for episode in range(M):
 - replay buffer 1e6 frames
 - agent sees 1 of every k frames, and repeats last action during skipped frames
   - set k=4, except space invaders uses k=3
+
+# DEBUGGING
+Things to try:
+- increase buffer size (ondrej already running)
+- play using optimal policy
+- train using ram instead of images
+- merge changes
+- MinAtar
+- Step-wise change from a working implementation to the current one
