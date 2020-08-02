@@ -1,3 +1,4 @@
+import os
 import random
 import sys
 from argparse import ArgumentParser
@@ -163,14 +164,15 @@ class Agent:
         predicted_values = self.policy_net(states).gather(
             1, actions.unsqueeze(-1)).squeeze(-1)
         loss = huber(y, predicted_values, 2.)
-        # loss = F.smooth_l1_loss(y, predicted_values)
         loss.backward()
         self.optimizer.step()
         return (y - predicted_values).abs().mean()
 
 
 def save(agent, path):
-    torch.save(agent.policy_net.state_dict(), path)
+    os.makedirs(path, exist_ok=True)
+    ckpt = os.path.join(path, f'{agent.game}.pt')
+    torch.save(agent.policy_net.state_dict(), ckpt)
 
 
 def parse_args(argv):
@@ -181,10 +183,10 @@ def parse_args(argv):
     p.add_argument('--max_eps', default=1.0, type=float01)
     p.add_argument('--min_eps', default=0.1, type=float01)
     p.add_argument('--eps_duration', type=toInt, default=int(1e6))
-    p.add_argument('--replay_buffer_capacity', type=toInt, default=int(1e6))
+    p.add_argument('--replay_buffer_capacity', type=toInt, default=int(1e5))
     p.add_argument('--replay_start_size',
                    type=toInt,
-                   default=int(5e4),
+                   default=int(1e5),
                    help='init random steps')
     p.add_argument('--discount_factor', default=0.99, type=float01)
     p.add_argument('--target_update_frequency',
@@ -199,7 +201,7 @@ def parse_args(argv):
                    help='number of frames between gradient steps')
     p.add_argument('--episode_length', type=int, default=1000)
     p.add_argument('--lr', type=float, default=0.00025)
-    p.add_argument('--save_path', type=str, default='checkpoint.pt')
+    p.add_argument('--save_path', type=str, default='checkpoints')
     return p.parse_args(argv)
 
 
