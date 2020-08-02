@@ -66,7 +66,8 @@ class Agent:
                  lr: float,
                  device: str = 'cuda:0',
                  env_seed: int = 0,
-                 frame_buffer_size: int = 4):
+                 frame_buffer_size: int = 4,
+                 print_self=True):
 
         self.device = device
         self.discount_factor = discount_factor
@@ -94,7 +95,8 @@ class Agent:
             # momentum=0.95,
             eps=0.01)
 
-        print(self)
+        if print_self:
+            print(self)
         self._fill_replay_buf(replay_start_size)
 
     def __repr__(self):

@@ -2,8 +2,10 @@ import argparse
 import os
 from pathlib import Path
 
+import pandas as pd
 import torch
 from moviepy.editor import ImageSequenceClip
+from tqdm import trange
 
 from train import Agent, parse_args
 
@@ -20,6 +22,7 @@ def load_agent(ckpt):
         batch_size=args.batch_size,
         discount_factor=args.discount_factor,
         lr=args.lr,
+        print_self=False,
     )
     agent.policy_net.load_state_dict(torch.load(ckpt))
     agent.policy_net.eval()
@@ -40,11 +43,37 @@ def _make_gif(agent, name, epsilon):
 
 
 def make_gifs(agent, game):
+    print(f'Make GIFs of {game}...')
     os.makedirs('gifs', exist_ok=True)
-    print('Make GIF of random play...')
     _make_gif(agent, f'{game}.random', 1.0)
-    print('Make GIF of trained play...')
     _make_gif(agent, f'{game}.trained', 0.0)
+
+
+def _run_game(agent, epsilon):
+    episode_reward = 0.
+    while True:
+        reward, _, done = agent.step(epsilon)
+        episode_reward += reward
+        if done:
+            break
+    return episode_reward
+
+
+def make_scores(agent, game):
+    print(f'Make scores of {game}...')
+    n_episode = 100
+
+    trained_reward = 0.
+    for _ in trange(n_episode, desc='Trained episodes'):
+        trained_reward += _run_game(agent, 0.)
+    trained_reward /= n_episode
+
+    random_reward = 0.
+    for _ in trange(n_episode, desc='Random episodes'):
+        random_reward += _run_game(agent, 1.)
+    random_reward /= n_episode
+
+    return trained_reward, random_reward
 
 
 if __name__ == '__main__':
@@ -52,6 +81,14 @@ if __name__ == '__main__':
     p.add_argument('--save_path', default='checkpoints')
     args = p.parse_args()
 
+    avg_episode_rewards = {}
     for ckpt in Path(args.save_path).glob('*.pt'):
         agent, game = load_agent(ckpt)
         make_gifs(agent, game)
+        trained_reward, random_reward = make_scores(agent, game)
+        avg_episode_rewards[game] = [trained_reward, random_reward]
+
+    table = pd.DataFrame.from_dict(avg_episode_rewards,
+                                   orient='index',
+                                   columns=['Trained', 'Random']).to_latex()
+    print(table)
