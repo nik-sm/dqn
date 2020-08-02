@@ -5,6 +5,7 @@ venv/
 *.mypy_cache/
 tensorboard_logs/
 checkpoint.pt
+gifs/
 
 # ondrej
 .idea
