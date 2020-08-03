@@ -37,8 +37,7 @@ def _make_gif(agent, name, epsilon):
     for _ in range(total_frames):
         frames.append(agent.env.render(mode='rgb_array'))
         _, _, done = agent.step(epsilon)
-        if done:
-            agent.reset()
+        # the agent resets itself and the environment when done
     g = ImageSequenceClip(frames, fps=15)
     g.write_gif(os.path.join('gifs', f'{name}.gif'), fps=fps)
 
@@ -56,14 +55,14 @@ def _run_game(agent, epsilon):
         reward, _, done = agent.step(epsilon, clip_reward=False)
         episode_reward += reward
         if done:
-            agent.reset()
+            # the agent resets itself and the environment when done
             break
     return episode_reward
 
 
 def make_scores(agent, game):
     print(f'Make scores of {game}...')
-    n_episode = 20
+    n_episode = 5
     trained_rewards = []
 
     for _ in trange(n_episode, desc='Trained episodes'):
