@@ -63,7 +63,7 @@ def _run_game(agent, epsilon):
 
 def make_scores(agent, game):
     print(f'Make scores of {game}...')
-    n_episode = 100
+    n_episode = 20
     trained_rewards = []
 
     for _ in trange(n_episode, desc='Trained episodes'):
