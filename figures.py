@@ -56,6 +56,7 @@ def _run_game(agent, epsilon):
         reward, _, done = agent.step(epsilon, clip_reward=False)
         episode_reward += reward
         if done:
+            agent.reset()
             break
     return episode_reward
 
