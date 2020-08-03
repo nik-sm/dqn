@@ -1,8 +1,9 @@
 import argparse
 import os
 from pathlib import Path
+from pprint import pprint
 
-import pandas as pd
+import numpy as np
 import torch
 from moviepy.editor import ImageSequenceClip
 from tqdm import trange
@@ -52,7 +53,7 @@ def make_gifs(agent, game):
 def _run_game(agent, epsilon):
     episode_reward = 0.
     while True:
-        reward, _, done = agent.step(epsilon)
+        reward, _, done = agent.step(epsilon, clip_reward=False)
         episode_reward += reward
         if done:
             break
@@ -62,18 +63,17 @@ def _run_game(agent, epsilon):
 def make_scores(agent, game):
     print(f'Make scores of {game}...')
     n_episode = 100
+    trained_rewards = []
 
-    trained_reward = 0.
     for _ in trange(n_episode, desc='Trained episodes'):
-        trained_reward += _run_game(agent, 0.)
-    trained_reward /= n_episode
+        trained_rewards.append(_run_game(agent, 0.))
 
-    random_reward = 0.
+    random_rewards = []
     for _ in trange(n_episode, desc='Random episodes'):
-        random_reward += _run_game(agent, 1.)
-    random_reward /= n_episode
+        random_rewards.append(_run_game(agent, 1.))
 
-    return trained_reward, random_reward
+    return (np.mean(trained_rewards), np.std(trained_rewards),
+            np.mean(random_rewards), np.std(random_rewards))
 
 
 if __name__ == '__main__':
@@ -81,14 +81,15 @@ if __name__ == '__main__':
     p.add_argument('--save_path', default='checkpoints')
     args = p.parse_args()
 
-    avg_episode_rewards = {}
+    scores = {}
     for ckpt in Path(args.save_path).glob('*.pt'):
         agent, game = load_agent(ckpt)
         make_gifs(agent, game)
-        trained_reward, random_reward = make_scores(agent, game)
-        avg_episode_rewards[game] = [trained_reward, random_reward]
+        t_mean, t_std, r_mean, r_std = make_scores(agent, game)
+        scores[game] = {
+                'trained_mean': t_mean,
+                'trained_std': t_std,
+                'random_mean': r_mean,
+                'random_std': r_std}
 
-    table = pd.DataFrame.from_dict(avg_episode_rewards,
-                                   orient='index',
-                                   columns=['Trained', 'Random']).to_latex()
-    print(table)
+        pprint(scores)

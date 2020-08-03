@@ -117,7 +117,7 @@ class Agent:
         self.state = self.env.reset()
 
     @torch.no_grad()
-    def step(self, epsilon):
+    def step(self, epsilon, clip_reward=True):
         """
         Choose an action based on current state and epsilon-greedy policy
         """
@@ -134,7 +134,8 @@ class Agent:
 
         # Apply action
         next_state, reward, done, _ = self.env.step(action)
-        reward = max(-1.0, min(reward, 1.0))
+        if clip_reward:
+            reward = max(-1.0, min(reward, 1.0))
 
         # Store into replay buffer
         self.replay_buf.append(
