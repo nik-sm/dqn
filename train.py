@@ -44,8 +44,8 @@ class ReplayBuffer:
 
         # stack will copy the tensors, so .to() will not affect
         # the data in the buffer
-        states = torch.stack(states, dim=0).type(torch.float32).to(self.device) / 255.0
-        next_states = torch.stack(next_states, dim=0).type(torch.float32).to(self.device) / 255.0
+        states = torch.stack(states, dim=0).to(self.device) / 255.0
+        next_states = torch.stack(next_states, dim=0).to(self.device) / 255.0
 
         actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         rewards = torch.tensor(rewards,
@@ -140,10 +140,10 @@ class Agent:
         # Store into replay buffer
         self.replay_buf.append(
             (torch.tensor(
-                np.array(self.state), dtype=torch.uint8, device="cpu"),
+                np.array(self.state), dtype=torch.float32, device="cpu") / 255.,
              action, reward,
              torch.tensor(
-                 np.array(next_state), dtype=torch.uint8, device="cpu"),
+                 np.array(next_state), dtype=torch.float32, device="cpu") / 255.,
              done))
 
         # Advance to next state

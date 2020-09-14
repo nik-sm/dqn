@@ -37,8 +37,7 @@ def _make_gif(agent, name, epsilon):
     frames = []
     for _ in range(total_frames):
         frames.append(agent.env.render(mode='rgb_array'))
-        _, _, done = agent.step(epsilon)
-        time.sleep(0.01) # everyday we stray further from god
+        agent.step(epsilon)
         # the agent resets itself and the environment when done
     g = ImageSequenceClip(frames, fps=15)
     g.write_gif(os.path.join('gifs', f'{name}.gif'), fps=fps)
@@ -55,7 +54,6 @@ def _run_game(agent, epsilon):
     episode_reward = 0.
     while True:
         reward, _, done = agent.step(epsilon, clip_reward=False)
-        time.sleep(0.01)
         episode_reward += reward
         if done:
             # the agent resets itself and the environment when done
@@ -87,7 +85,11 @@ if __name__ == '__main__':
     scores = {}
     for ckpt in Path(args.save_path).glob('*.pt'):
         agent, game = load_agent(ckpt)
+
+        # GIFs
         make_gifs(agent, game)
+
+        # Scores
         t_mean, t_std, r_mean, r_std = make_scores(agent, game)
         scores[game] = {
                 'trained_mean': t_mean,
