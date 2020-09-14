@@ -20,7 +20,6 @@ For each game, the left GIF shows random play, and the right GIF shows the train
 Random Play | Trained Agent
 :---:|:---:
 ![breakout-random](gifs/BreakoutNoFrameskip-v0.random.gif) | ![breakout-trained](gifs/BreakoutNoFrameskip-v0.trained.gif)
-
 ![freeway-random](gifs/FreewayNoFrameskip-v0.random.gif) | ![freeway-trained](gifs/FreewayNoFrameskip-v0.trained.gif)
 
 # TODO
