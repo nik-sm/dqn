@@ -31,23 +31,23 @@ def load_agent(ckpt):
     return agent, game
 
 
-def _make_gif(agent, name, epsilon):
+def _make_gif(agent, name, epsilon, n_seconds):
     fps = 15
-    total_frames = 45 * fps
+    total_frames = n_seconds * fps
     frames = []
     for _ in range(total_frames):
         frames.append(agent.env.render(mode='rgb_array'))
         agent.step(epsilon)
         # the agent resets itself and the environment when done
-    g = ImageSequenceClip(frames, fps=15)
+    g = ImageSequenceClip(frames, fps=fps)
     g.write_gif(os.path.join('gifs', f'{name}.gif'), fps=fps)
 
 
-def make_gifs(agent, game):
+def make_gifs(agent, game, n_seconds):
     print(f'Make GIFs of {game}...')
     os.makedirs('gifs', exist_ok=True)
-    _make_gif(agent, f'{game}.random', 1.0)
-    _make_gif(agent, f'{game}.trained', 0.0)
+    _make_gif(agent, f'{game}.random', 1.0, n_seconds)
+    _make_gif(agent, f'{game}.trained', 0.0, n_seconds)
 
 
 def _run_game(agent, epsilon):
@@ -61,16 +61,15 @@ def _run_game(agent, epsilon):
     return episode_reward
 
 
-def make_scores(agent, game):
+def make_scores(agent, game, n_episodes):
     print(f'Make scores of {game}...')
-    n_episode = 5
     trained_rewards = []
 
-    for _ in trange(n_episode, desc='Trained episodes'):
+    for _ in trange(n_episodes, desc='Trained episodes'):
         trained_rewards.append(_run_game(agent, 0.))
 
     random_rewards = []
-    for _ in trange(n_episode, desc='Random episodes'):
+    for _ in trange(n_episodes, desc='Random episodes'):
         random_rewards.append(_run_game(agent, 1.))
 
     return (np.mean(trained_rewards), np.std(trained_rewards),
@@ -80,6 +79,8 @@ def make_scores(agent, game):
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--save_path', default='checkpoints')
+    p.add_argument('--n_episodes', default=10, type=int, help='# episodes for measuring scores')
+    p.add_argument('--n_seconds', default=10, type=int, help='GIF duration')
     args = p.parse_args()
 
     scores = {}
@@ -87,10 +88,10 @@ if __name__ == '__main__':
         agent, game = load_agent(ckpt)
 
         # GIFs
-        make_gifs(agent, game)
+        make_gifs(agent, game, args.n_seconds)
 
         # Scores
-        t_mean, t_std, r_mean, r_std = make_scores(agent, game)
+        t_mean, t_std, r_mean, r_std = make_scores(agent, game, args.n_episodes)
         scores[game] = {
                 'trained_mean': t_mean,
                 'trained_std': t_std,
